@@ -6,6 +6,7 @@ use op_editor_core::Viewport;
 
 const LABEL_SIDE_PADDING: f32 = 4.0;
 const LABEL_FONT_SIZE: f32 = 12.0;
+const LABEL_FONT_WEIGHT: u16 = 500;
 const GENERATING_ICON_SIZE: f32 = 14.0;
 const GENERATING_ICON_GAP: f32 = 4.0;
 
@@ -119,10 +120,14 @@ fn label_rect(
     let b = node.aggregate_bounds();
     let sx = viewport_origin.x + b.origin.x * viewport.zoom;
     let sy = viewport_origin.y + b.origin.y * viewport.zoom;
+    // Like Figma, a frame's name never reaches past its own frame: the hit box
+    // stops at the frame's right edge so it cannot steal clicks from the
+    // neighbouring frame's label.
+    let frame_w = (b.size.x * viewport.zoom).max(0.0);
     Rect::xywh(
         sx - LABEL_SIDE_PADDING,
         sy - LABEL_BOX_TOP_OFFSET,
-        label_width(label) + LABEL_SIDE_PADDING * 2.0,
+        label_width(label).min(frame_w) + LABEL_SIDE_PADDING * 2.0,
         LABEL_BOX_HEIGHT,
     )
 }
@@ -185,8 +190,24 @@ pub(super) fn paint_frame_labels(
             continue;
         }
         let hit_rect = label_rect(node, label, viewport_origin, viewport);
+        // Like Figma, shorten the name with "…" so it fits the frame's
+        // on-screen width; long names no longer run into the next frame's.
+        let icon_w = if label.generating {
+            GENERATING_ICON_SIZE + GENERATING_ICON_GAP
+        } else {
+            0.0
+        };
+        let max_text_w = (b.size.x * viewport.zoom - icon_w).max(0.0);
+        let text = crate::util::ellipsize_to_width(&label.text, max_text_w, |run| {
+            crate::widgets::text_metrics::measure_chrome_weighted(
+                cx.backend,
+                run,
+                LABEL_FONT_SIZE,
+                LABEL_FONT_WEIGHT,
+            )
+        });
         let layout = TextLayout::single_run(
-            &label.text,
+            &text,
             "system-ui",
             LABEL_FONT_SIZE,
             jian_core::scene::Color::rgba(
@@ -197,7 +218,7 @@ pub(super) fn paint_frame_labels(
             ),
             Point2D::ZERO,
         )
-        .with_font_weight(500);
+        .with_font_weight(LABEL_FONT_WEIGHT);
         let text_baseline_y = sy - LABEL_BASELINE_OFFSET;
         let mut text_x = hit_rect.origin.x + LABEL_SIDE_PADDING;
         if label.generating {

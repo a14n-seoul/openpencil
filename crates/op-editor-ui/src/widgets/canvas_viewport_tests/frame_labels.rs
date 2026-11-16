@@ -81,7 +81,9 @@ fn frame_label_paint_uses_top_level_scene_nodes() {
 #[test]
 fn generating_frame_label_paints_vector_icon_and_keeps_full_hit_area() {
     let mut frame = SceneNode::leaf("n1", NodeKind::Frame);
-    frame.bounds = Rect::xywh(40.0, 40.0, 120.0, 80.0);
+    // Wide enough for the whole "Generating: Frame" label: names longer than
+    // their frame are ellipsized (see the long-label test below).
+    frame.bounds = Rect::xywh(40.0, 40.0, 240.0, 80.0);
     let color = Color {
         r: 0.0,
         g: 0.48,
@@ -203,4 +205,78 @@ fn reader_mode_collects_no_root_frame_labels() {
     let viewport = CanvasViewport::from_editor(&state, &scene);
 
     assert!(viewport.frame_labels.is_empty());
+}
+
+fn paint_one_label(frame_width: f32, name: &str) -> Vec<String> {
+    let mut frame = SceneNode::leaf("n1", NodeKind::Frame);
+    frame.bounds = Rect::xywh(40.0, 40.0, frame_width, 80.0);
+    let color = Color {
+        r: 0.6,
+        g: 0.6,
+        b: 0.6,
+        a: 1.0,
+    };
+    let labels = vec![FrameLabel::new("n1", name, color, false)];
+    let mut state = EditorState::new();
+    state.viewport.zoom = 1.0;
+    let mut backend = RecordingBackend::default();
+    {
+        let mut cx = PaintCx {
+            backend: &mut backend,
+        };
+        crate::widgets::canvas_frame_labels::paint_frame_labels(
+            &mut cx,
+            std::slice::from_ref(&frame),
+            &labels,
+            &[],
+            Point2D::ZERO,
+            &state.viewport,
+            Rect::xywh(0.0, 0.0, 800.0, 300.0),
+        );
+    }
+    backend.texts
+}
+
+#[test]
+fn long_frame_label_is_shortened_with_an_ellipsis_to_the_frame_width() {
+    let name = "B10 사주+점성술 / P1 / T1 하단 중앙 — a name far wider than its frame";
+    let texts = paint_one_label(120.0, name);
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].ends_with('…'), "got {:?}", texts[0]);
+    assert!(texts[0].chars().count() < name.chars().count());
+
+    // The label's hit box stops at the frame's right edge (x = 160), so it
+    // cannot steal clicks from the neighbouring frame's label.
+    let mut frame = SceneNode::leaf("n1", NodeKind::Frame);
+    frame.bounds = Rect::xywh(40.0, 40.0, 120.0, 80.0);
+    let labels = vec![FrameLabel::new(
+        "n1",
+        name,
+        Color {
+            r: 0.6,
+            g: 0.6,
+            b: 0.6,
+            a: 1.0,
+        },
+        false,
+    )];
+    let mut state = EditorState::new();
+    state.viewport.zoom = 1.0;
+    let hit_at = |x: f32| {
+        crate::widgets::canvas_frame_labels::frame_label_at_point(
+            std::slice::from_ref(&frame),
+            &labels,
+            Point2D::ZERO,
+            &state.viewport,
+            Rect::xywh(0.0, 0.0, 800.0, 300.0),
+            Point2D::new(x, 28.0),
+        )
+    };
+    assert_eq!(hit_at(150.0), Some("n1".into()));
+    assert_eq!(hit_at(200.0), None);
+}
+
+#[test]
+fn frame_label_that_fits_is_painted_whole() {
+    assert_eq!(paint_one_label(600.0, "B10"), vec!["B10".to_string()]);
 }
