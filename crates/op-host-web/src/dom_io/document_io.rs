@@ -399,15 +399,44 @@ fn download_saved_document<C: RepaintContext + 'static>(
     name: &str,
     json: &str,
 ) {
-    if let Err(e) = crate::web_clipboard::download_bytes(name, "application/json", json.as_bytes())
-    {
-        web_sys::console::error_1(&e);
-        return;
+    let (epoch, generation, revision) = {
+        let b = inner.borrow();
+        let state = b.host().editor_state();
+        (
+            b.host().document_epoch(),
+            state.document_generation(),
+            state.document_revision(),
+        )
+    };
+    let pending = crate::web_clipboard::begin_download(name, "application/json", json.as_bytes());
+    let inner = inner.clone();
+    let name = name.to_owned();
+    let acknowledge = move || {
+        let mut b = inner.borrow_mut();
+        let state = b.host().editor_state();
+        if file_actions::save_snapshot_matches_document(
+            b.host().document_epoch(),
+            state.document_generation(),
+            state.document_revision(),
+            epoch,
+            generation,
+            revision,
+        ) {
+            file_actions::acknowledge_browser_download(b.host_mut().editor_state_mut(), &name);
+            b.host_mut().mark_editor_state_dirty();
+            let _ = b.repaint();
+        }
+    };
+    match pending {
+        Ok(None) => acknowledge(),
+        Ok(Some(promise)) => wasm_bindgen_futures::spawn_local(async move {
+            match wasm_bindgen_futures::JsFuture::from(promise).await {
+                Ok(_) => acknowledge(),
+                Err(error) => web_sys::console::error_1(&error),
+            }
+        }),
+        Err(error) => web_sys::console::error_1(&error),
     }
-    let mut b = inner.borrow_mut();
-    file_actions::acknowledge_browser_download(b.host_mut().editor_state_mut(), name);
-    b.host_mut().mark_editor_state_dirty();
-    let _ = b.repaint();
 }
 
 /// Ask the local web-canvas daemon for a PDF and hand the bytes to the

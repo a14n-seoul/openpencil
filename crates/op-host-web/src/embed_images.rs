@@ -1,7 +1,8 @@
 //! Optional embedder callbacks. The host owns resource authorization and download naming.
 use js_sys::{Function, Promise, Uint8Array};
 use op_editor_ui::widgets::canvas_viewport_image::{
-    mark_remote_image_failed, store_remote_image_bytes, take_remote_image_requests,
+    mark_remote_image_failed, release_remote_image_request, store_remote_image_bytes,
+    take_remote_image_requests,
 };
 use std::cell::{Cell, RefCell};
 use wasm_bindgen::prelude::*;
@@ -28,12 +29,34 @@ pub(crate) fn drain() {
             let result = async {
                 let pending = loader.call1(&JsValue::UNDEFINED, &url.into())?;
                 let data = JsFuture::from(Promise::resolve(&pending)).await?;
-                data.dyn_into::<Uint8Array>()
+                Ok::<_, JsValue>(data.dyn_into::<Uint8Array>().ok())
             }
             .await;
             match result {
-                Ok(bytes) if bytes.length() > 0 => store_remote_image_bytes(id, bytes.to_vec()),
-                _ => mark_remote_image_failed(id),
+                Ok(Some(bytes)) if bytes.length() > 0 => {
+                    store_remote_image_bytes(id, bytes.to_vec())
+                }
+                Ok(_) => mark_remote_image_failed(id),
+                Err(_) => {
+                    // Leave this ID in flight through the cooldown. Only the next visible paint
+                    // may requeue it, so navigating away does not keep a retry loop alive.
+                    let retry = Closure::once_into_js(move || {
+                        release_remote_image_request(id);
+                        crate::repaint_coalescer::request();
+                    });
+                    if web_sys::window()
+                        .and_then(|w| {
+                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                retry.unchecked_ref(),
+                                30_000,
+                            )
+                            .ok()
+                        })
+                        .is_none()
+                    {
+                        mark_remote_image_failed(id);
+                    }
+                }
             }
             LOADING.set(LOADING.get() - 1);
             crate::repaint_coalescer::request();
@@ -41,13 +64,16 @@ pub(crate) fn drain() {
     }
 }
 
-pub(crate) fn handle_download(name: &str, blob: &web_sys::Blob) -> Result<bool, JsValue> {
+pub(crate) fn handle_download(
+    name: &str,
+    blob: &web_sys::Blob,
+) -> Result<Option<Promise>, JsValue> {
     let hook = HOST.with(|host| host.borrow().as_ref().map(|pair| pair.1.clone()));
     match hook {
         Some(hook) => Ok(hook
             .call2(&JsValue::UNDEFINED, &name.into(), blob)?
-            .as_bool()
-            == Some(true)),
-        None => Ok(false),
+            .dyn_into::<Promise>()
+            .ok()),
+        None => Ok(None),
     }
 }

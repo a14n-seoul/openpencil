@@ -193,6 +193,13 @@ pub fn store_remote_image_bytes(id: u64, bytes: Vec<u8>) {
     }
 }
 
+/// A temporary transport failure can be requested again if the image is still rendered.
+pub fn release_remote_image_request(id: u64) {
+    if let Ok(mut reg) = remote_images().lock() {
+        reg.requested.remove(&id);
+    }
+}
+
 /// Host-side negative cache: a failed fetch keeps the placeholder
 /// permanently — paint never re-queues a failed id, so a dead URL
 /// doesn't refetch every frame.
