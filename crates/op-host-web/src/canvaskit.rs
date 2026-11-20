@@ -43,7 +43,47 @@ pub use measure::BrowserMeasure;
 /// `CanvasKitBackend`, behind the same `RenderBackend` the desktop host uses.
 #[wasm_bindgen]
 pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
-    mount::mount_ck(canvas_id).await
+    mount::mount_ck(canvas_id, None).await.map(|_| ())
+}
+
+/// Mount an embedded editor whose host supplies the listed design fonts on demand.
+#[wasm_bindgen]
+pub async fn mount_ck_with_fonts(
+    canvas_id: String,
+    families: Vec<String>,
+) -> Result<EditorFonts, JsValue> {
+    mount::mount_ck(canvas_id, Some(families))
+        .await
+        .map(EditorFonts)
+}
+
+/// Registers faces in this editor and rebuilds text layout after a font change.
+#[wasm_bindgen]
+pub struct EditorFonts(std::rc::Rc<std::cell::RefCell<inner::CkInner>>);
+
+#[wasm_bindgen]
+impl EditorFonts {
+    pub fn install(&self, family: &str, bytes: &[u8], imported: bool) -> Result<(), JsValue> {
+        let mut editor = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| JsValue::from_str("editor busy"))?;
+        let registered = if imported {
+            editor.backend.register_imported_font(family, bytes)
+        } else {
+            let normalized = crate::vf_normalize::with_default_wght_400(bytes);
+            editor
+                .backend
+                .register_bundled_font(family, normalized.as_deref().unwrap_or(bytes))
+        };
+        if !registered {
+            return Err(JsValue::from_str("invalid font"));
+        }
+        editor.host.invalidate_layout_scene();
+        editor.host.mark_editor_state_dirty();
+        crate::repaint_coalescer::request();
+        Ok(())
+    }
 }
 
 /// Smoke entry retained for FFI validation (renders AA text + a fill).
