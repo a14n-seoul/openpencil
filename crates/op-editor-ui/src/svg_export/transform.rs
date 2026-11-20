@@ -130,7 +130,7 @@ pub(super) fn svg_id(id: &str) -> String {
     out
 }
 
-fn matrix_value(xform: glam::Affine2) -> String {
+pub(super) fn matrix_value(xform: glam::Affine2) -> String {
     let m = xform.matrix2;
     let t = xform.translation;
     format!(
@@ -139,7 +139,7 @@ fn matrix_value(xform: glam::Affine2) -> String {
     )
 }
 
-fn transformed_bounds(rect: Rect, xform: glam::Affine2) -> Rect {
+pub(super) fn transformed_bounds(rect: Rect, xform: glam::Affine2) -> Rect {
     let points = [
         glam::Vec2::new(rect.origin.x, rect.origin.y),
         glam::Vec2::new(rect.origin.x + rect.size.x, rect.origin.y),

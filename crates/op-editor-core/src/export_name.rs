@@ -133,10 +133,15 @@ pub fn selected_export_node_stem(state: &EditorState) -> Option<String> {
 /// `<document>` otherwise (no selection, a multi-selection, or a
 /// page-level format).
 pub fn default_export_stem(state: &EditorState) -> String {
-    let document = document_export_stem(state);
     if !node_scoped_format(state) {
-        return document;
+        return document_export_stem(state);
     }
+    selection_export_stem(state)
+}
+
+/// Embed hosts can also render one selected node as a single-page PDF.
+pub fn selection_export_stem(state: &EditorState) -> String {
+    let document = document_export_stem(state);
     match selected_export_node_stem(state) {
         // A node named after the document would only stutter.
         Some(node) if node != document => format!("{document}-{node}"),

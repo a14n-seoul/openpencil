@@ -10,12 +10,23 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 thread_local! {
     static HOST: RefCell<Option<(Function, Function)>> = const { RefCell::new(None) };
+    static EXPORT: RefCell<Option<Function>> = const { RefCell::new(None) };
     static LOADING: Cell<usize> = const { Cell::new(0) };
 }
 
 #[wasm_bindgen]
 pub fn set_embed_image_host(load_preview: Function, download: Function) {
     HOST.with(|host| *host.borrow_mut() = Some((load_preview, download)));
+}
+
+/// Optional browser-local encoder. Standalone builds keep the daemon export path.
+#[wasm_bindgen]
+pub fn set_embed_export_host(export: Function) {
+    EXPORT.with(|slot| *slot.borrow_mut() = Some(export));
+}
+
+pub(crate) fn export_hook() -> Option<Function> {
+    EXPORT.with(|slot| slot.borrow().clone())
 }
 
 pub(crate) fn drain() {
