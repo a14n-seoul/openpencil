@@ -91,6 +91,7 @@ impl CkInner {
         self.backend.begin_frame();
         self.host.paint_dyn(&mut self.backend, w, h);
         self.backend.end_frame();
+        crate::embed_images::drain();
         let placements = self.host.preview_video_overlay_placements(w, h);
         self.video_overlay.sync(&self.canvas, w, h, &placements);
         self.sync_a11y();

@@ -108,6 +108,10 @@ pub fn download_bytes(
     bag.set_type(mime);
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &bag)?;
 
+    #[cfg(feature = "canvaskit")]
+    if crate::embed_images::handle_download(filename, &blob)? {
+        return Ok(());
+    }
     let url = web_sys::Url::create_object_url_with_blob(&blob)?;
 
     let window = web_sys::window()
