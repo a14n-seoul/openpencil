@@ -657,3 +657,38 @@ fn composite_opacity_wraps_gradient_stroke_and_descendants_once() {
     assert!(!body.contains("fill-opacity="), "{body}");
     assert_eq!(body.matches(r#"<g opacity="0.5""#).count(), 1, "{body}");
 }
+
+#[test]
+fn browser_image_layer_and_transparent_frame_export_the_photo_at_authored_size() {
+    // The loader represents a photo as a rectangle with a fallback fill.
+    let mut photo = filled_rect("photo", 10., 20., 50., 30., Color::WHITE);
+    photo.image_src = Some("data:image/png;base64,AA==".into());
+    let mut frame = SceneNode::leaf("board", NodeKind::Frame);
+    frame.bounds = Rect::xywh(0., 0., 200., 160.);
+    frame.children.push(photo);
+    let scene = scene_with(vec![frame]);
+    let svg = serialize_node_svg_with_frame_size(&scene, "board", true, &mut emit_text).unwrap();
+    assert_eq!(view_box(&svg), [0., 0., 200., 160.]);
+    assert!(svg.contains(r#"<image id="photo""#));
+    assert!(svg.contains("data:image/png;base64,AA=="));
+    assert_eq!(
+        view_box(&serialize_node_svg(&scene, "photo").unwrap()),
+        [10., 20., 50., 30.]
+    );
+}
+
+#[test]
+fn svg_crop_uses_authored_uv_and_excludes_hidden_photo_sources() {
+    let mut crop = filled_rect("crop", 20., 30., 100., 50., Color::WHITE);
+    crop.image_src = Some("visible-photo".into());
+    crop.image_transform = Some([0.5, 0., 0.5, 0., 1., 0.]);
+    let mut hidden = crop.clone();
+    hidden.id = "hidden".into();
+    hidden.kind = NodeKind::Ellipse;
+    hidden.hidden = true;
+    hidden.image_src = Some("hidden-photo".into());
+    let svg = serialize_active_page_svg(&scene_with(vec![crop, hidden])).unwrap();
+    assert!(svg.contains("visible-photo"));
+    assert!(svg.contains("matrix(200 0 0 50 -80 30)"), "{svg}");
+    assert!(!svg.contains("hidden-photo"));
+}

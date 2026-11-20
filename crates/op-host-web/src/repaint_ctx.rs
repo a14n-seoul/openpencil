@@ -14,6 +14,10 @@ use wasm_bindgen::JsValue;
 /// The minimal surface the web integration modules drive: read/write the
 /// shared widget host, then schedule a repaint.
 pub(crate) trait RepaintContext {
+    fn embedded_export_svg(&mut self) -> Result<String, String> {
+        crate::file_actions::export_svg_document(self.host().editor_state())
+            .map_err(|e| e.to_string())
+    }
     fn host(&self) -> &WidgetHost;
     fn host_mut(&mut self) -> &mut WidgetHost;
     /// Rebuild the settings/credential change-detection baselines from the

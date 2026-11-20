@@ -211,7 +211,7 @@ pub mod canvas_viewport_overlay;
 pub mod canvas_viewport_paint;
 #[cfg(test)]
 mod canvas_viewport_paint_pop_tests;
-mod canvas_viewport_text;
+pub(crate) mod canvas_viewport_text;
 pub(crate) mod canvas_viewport_widget;
 pub mod preview_device_switcher;
 pub mod scene_paint_options;

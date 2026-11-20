@@ -210,6 +210,15 @@ impl CkInner {
 }
 
 impl crate::repaint_ctx::RepaintContext for CkInner {
+    fn embedded_export_svg(&mut self) -> Result<String, String> {
+        let state = self.host.editor_state();
+        let scene = op_pen_loader::editor_state_to_active_page_export_layout_scene(state);
+        let selected = (state.selection_count() == 1 && state.selection.anchor.is_real())
+            .then(|| state.selection.anchor.as_str());
+        op_editor_ui::svg_export::serialize_design_svg(&scene, selected, &mut self.backend)
+            .map_err(|e| e.to_string())
+    }
+
     fn host(&self) -> &crate::widget_host::WidgetHost {
         &self.host
     }

@@ -11,6 +11,7 @@ mod composite;
 #[cfg(test)]
 mod composite_tests;
 mod image_metadata;
+mod measured_text;
 #[path = "svg_export_rect.rs"]
 mod rect;
 mod transform;
@@ -72,6 +73,25 @@ impl From<SvgExportError> for String {
 
 /// Serialize the active page in `scene` as an SVG string.
 pub fn serialize_active_page_svg(scene: &LayoutScene) -> Result<String, SvgExportError> {
+    page_svg(scene, &mut emit_text)
+}
+
+type PaintText<'a> = dyn FnMut(&mut String, &SceneNode) + 'a;
+
+/// A live browser export measures and places text with the same backend as the canvas.
+pub fn serialize_design_svg(
+    scene: &LayoutScene,
+    selected: Option<&str>,
+    backend: &mut dyn crate::RenderBackend,
+) -> Result<String, SvgExportError> {
+    let mut text = |out: &mut String, node: &SceneNode| measured_text::paint(out, node, backend);
+    match selected {
+        Some(id) => serialize_node_svg_with_frame_size(scene, id, true, &mut text),
+        None => page_svg(scene, &mut text),
+    }
+}
+
+fn page_svg(scene: &LayoutScene, text: &mut PaintText<'_>) -> Result<String, SvgExportError> {
     let Some(page) = scene.active_page() else {
         return Err(SvgExportError::NoActivePage);
     };
@@ -81,20 +101,38 @@ pub fn serialize_active_page_svg(scene: &LayoutScene) -> Result<String, SvgExpor
         MARGIN,
         glam::Affine2::IDENTITY,
         &[],
+        text,
     )
 }
 
 /// Serialize one active-page node and subtree, tightly cropped to its painted bounds.
 pub fn serialize_node_svg(scene: &LayoutScene, node_id: &str) -> Result<String, SvgExportError> {
+    serialize_node_svg_with_frame_size(scene, node_id, false, &mut emit_text)
+}
+
+/// The embed's design export keeps the selected frame's authored dimensions.
+fn serialize_node_svg_with_frame_size(
+    scene: &LayoutScene,
+    node_id: &str,
+    preserve_frame_size: bool,
+    text: &mut PaintText<'_>,
+) -> Result<String, SvgExportError> {
     let page = scene.active_page().ok_or(SvgExportError::NoActivePage)?;
     let (node, ancestor_xform, ancestor_clips) =
         find_node_with_ancestor_context(&page.children, node_id)
             .ok_or_else(|| SvgExportError::NodeNotFound(node_id.to_string()))?;
-    let mut acc = BoundsAcc::new();
-    collect_bounds(node, ancestor_xform, &mut acc);
-    let painted_bounds = acc
-        .into_rect()
-        .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
+    let painted_bounds =
+        if preserve_frame_size && matches!(node.kind, NodeKind::Frame) && !node.hidden {
+            transform::transformed_bounds(
+                normalize_rect(node.bounds),
+                ancestor_xform * node_transform(node),
+            )
+        } else {
+            let mut acc = BoundsAcc::new();
+            collect_bounds(node, ancestor_xform, &mut acc);
+            acc.into_rect()
+                .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?
+        };
     let bounds = apply_ancestor_clip_bounds(painted_bounds, &ancestor_clips)
         .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
     serialize_svg(
@@ -103,6 +141,7 @@ pub fn serialize_node_svg(scene: &LayoutScene, node_id: &str) -> Result<String, 
         0.0,
         ancestor_xform,
         &ancestor_clips,
+        text,
     )
 }
 
@@ -112,6 +151,7 @@ fn serialize_svg(
     margin: f32,
     root_xform: glam::Affine2,
     ancestor_clips: &[AncestorClip],
+    text: &mut PaintText<'_>,
 ) -> Result<String, SvgExportError> {
     let view_x = bounds.origin.x - margin;
     let view_y = bounds.origin.y - margin;
@@ -132,7 +172,7 @@ fn serialize_svg(
         emit_affine_group_start(&mut svg, root_xform);
     }
     for node in nodes {
-        emit_node(&mut svg, node);
+        emit_node(&mut svg, node, text);
     }
     if wraps_root {
         svg.push_str("</g>");
@@ -156,6 +196,9 @@ fn emit_defs(out: &mut String, nodes: &[SceneNode], ancestor_clips: &[AncestorCl
 }
 
 fn emit_node_defs(out: &mut String, n: &SceneNode) {
+    if n.hidden {
+        return;
+    }
     let id = svg_id(&n.id);
     if let Some(gradient) = &n.gradient {
         emit_gradient(
@@ -165,7 +208,8 @@ fn emit_node_defs(out: &mut String, n: &SceneNode) {
             normalize_rect(n.bounds),
         );
     }
-    let clips_image = n.image_src.is_some() && n.corner_radius > 0.0;
+    let clips_image =
+        n.image_src.is_some() && (n.corner_radius > 0.0 || n.image_transform.is_some());
     if (n.clip_content || clips_image) && n.bounds.size.x != 0.0 && n.bounds.size.y != 0.0 {
         let r = normalize_rect(n.bounds);
         let _ = write!(
@@ -178,12 +222,31 @@ fn emit_node_defs(out: &mut String, n: &SceneNode) {
             n.corner_radius.max(0.0),
         );
     }
-    if n.image_fit == SceneImageFit::Tile {
-        if let Some(src) = n.image_src.as_deref() {
+    if let Some(src) = n.image_src.as_deref() {
+        if n.image_fit == SceneImageFit::Tile {
             emit_image_pattern(out, n, src, &id);
+        } else if has_shaped_image_fill(n) && n.image_transform.is_some() {
+            let _ = write!(
+                out,
+                r#"<pattern id="image-pattern-{id}" width="1" height="1" viewBox="0 0 1 1" preserveAspectRatio="none">"#
+            );
+            emit_transformed_photo(out, n, src, Rect::xywh(0., 0., 1., 1.));
+            out.push_str("</pattern>");
+        } else if has_shaped_image_fill(n) {
+            let r = normalize_rect(n.bounds);
+            let _ = write!(
+                out,
+                r#"<pattern id="image-pattern-{id}" width="1" height="1" viewBox="0 0 {} {}" preserveAspectRatio="none"><image width="{}" height="{}" href="{}" preserveAspectRatio="{}"/></pattern>"#,
+                r.size.x,
+                r.size.y,
+                r.size.x,
+                r.size.y,
+                xml_escape(src),
+                image_aspect_ratio(n.image_fit)
+            );
         }
     }
-    for child in &n.children {
+    for child in n.visible_children() {
         emit_node_defs(out, child);
     }
 }
@@ -327,7 +390,7 @@ fn own_paint_corners(n: &SceneNode) -> Option<Vec<glam::Vec2>> {
     crate::scene_bounds::own_paint_corners(n, SVG_PAINT_RULES)
 }
 
-fn emit_node(out: &mut String, n: &SceneNode) {
+fn emit_node(out: &mut String, n: &SceneNode, text: &mut PaintText<'_>) {
     if n.hidden {
         return;
     }
@@ -355,13 +418,19 @@ fn emit_node(out: &mut String, n: &SceneNode) {
     let composite_painted = composite::emit_visual(out, n);
     if !composite_painted {
         match &n.kind {
+            NodeKind::Rect | NodeKind::Frame if n.image_src.is_some() => {
+                emit_image(out, n);
+                if !defers_rect_stroke {
+                    emit_rect_stroke_overlay(out, n);
+                }
+            }
             NodeKind::Rect | NodeKind::Frame if defers_rect_stroke => emit_rect_fill(out, n),
             NodeKind::Rect | NodeKind::Frame => emit_rect(out, n),
             NodeKind::Ellipse => emit_ellipse(out, n),
             NodeKind::Polygon => emit_polygon(out, n),
             NodeKind::Line => emit_line(out, n),
             NodeKind::Path => emit_path(out, n),
-            NodeKind::Text => emit_text(out, n),
+            NodeKind::Text => text(out, n),
             NodeKind::Group => {}
             NodeKind::Other(_) => {
                 if n.image_src.is_some() {
@@ -380,7 +449,7 @@ fn emit_node(out: &mut String, n: &SceneNode) {
         let _ = write!(out, r#"<g clip-path="url(#clip-{})">"#, svg_id(&n.id));
     }
     for child in n.visible_children() {
-        emit_node(out, child);
+        emit_node(out, child, text);
     }
     if clips_children {
         out.push_str("</g>");
@@ -596,12 +665,18 @@ fn emit_image(out: &mut String, n: &SceneNode) {
         );
         return;
     }
-    let preserve = match n.image_fit {
-        SceneImageFit::Fit => "xMidYMid meet",
-        SceneImageFit::Crop | SceneImageFit::Fill => "xMidYMid slice",
-        SceneImageFit::Stretch => "none",
-        SceneImageFit::Tile => unreachable!("tile images return above"),
-    };
+    if n.image_transform.is_some() {
+        let _ = write!(
+            out,
+            r#"<g id="{}" clip-path="url(#clip-{id})" opacity="{}">"#,
+            xml_escape(&n.id),
+            n.opacity.clamp(0., 1.)
+        );
+        emit_transformed_photo(out, n, src, r);
+        out.push_str("</g>");
+        return;
+    }
+    let preserve = image_aspect_ratio(n.image_fit);
     let _ = write!(
         out,
         r#"<image id="{}" x="{}" y="{}" width="{}" height="{}" href="{}" preserveAspectRatio="{}" opacity="{}"{clip}/>"#,
@@ -614,6 +689,42 @@ fn emit_image(out: &mut String, n: &SceneNode) {
         preserve,
         n.opacity.clamp(0.0, 1.0)
     );
+}
+
+/// Figma stores node-to-source UV. SVG needs the inverse, placed in the selected bounds.
+fn emit_transformed_photo(out: &mut String, node: &SceneNode, src: &str, rect: Rect) {
+    let [a, b, tx, c, d, ty] = node.image_transform.unwrap_or([1., 0., 0., 0., 1., 0.]);
+    let uv = glam::Affine2::from_cols_array(&[a, c, b, d, tx, ty]);
+    let inverse = if uv.matrix2.determinant().abs() > f32::EPSILON && uv.is_finite() {
+        uv.inverse()
+    } else {
+        glam::Affine2::IDENTITY
+    };
+    let position = glam::Affine2::from_translation(glam::vec2(rect.origin.x, rect.origin.y))
+        * glam::Affine2::from_scale(glam::vec2(rect.size.x, rect.size.y))
+        * inverse;
+    let _ = write!(
+        out,
+        r#"<image width="1" height="1" href="{}" preserveAspectRatio="none" transform="{}"/>"#,
+        xml_escape(src),
+        transform::matrix_value(position)
+    );
+}
+fn has_shaped_image_fill(n: &SceneNode) -> bool {
+    n.image_src.is_some()
+        && matches!(
+            n.kind,
+            NodeKind::Ellipse | NodeKind::Polygon | NodeKind::Path
+        )
+}
+
+fn image_aspect_ratio(fit: SceneImageFit) -> &'static str {
+    match fit {
+        SceneImageFit::Fit => "xMidYMid meet",
+        SceneImageFit::Crop | SceneImageFit::Fill => "xMidYMid slice",
+        SceneImageFit::Stretch => "none",
+        SceneImageFit::Tile => unreachable!("tile images return above"),
+    }
 }
 
 fn emit_image_pattern(out: &mut String, n: &SceneNode, src: &str, id: &str) {
@@ -654,7 +765,14 @@ fn fill_stroke_attrs(n: &SceneNode) -> String {
 
 fn fill_attrs(n: &SceneNode) -> String {
     let mut s = String::new();
-    if n.gradient.is_some() {
+    if has_shaped_image_fill(n) {
+        let _ = write!(
+            s,
+            r#" fill="url(#image-pattern-{})" fill-opacity="{}""#,
+            svg_id(&n.id),
+            n.opacity.clamp(0.0, 1.0)
+        );
+    } else if n.gradient.is_some() {
         let _ = write!(s, r#" fill="url(#gradient-{})""#, svg_id(&n.id));
     } else if let Some(fill) = n.fill {
         let _ = write!(s, r#" fill="{}""#, color_to_rgb(fill));

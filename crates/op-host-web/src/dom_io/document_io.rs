@@ -486,10 +486,38 @@ pub(super) fn request_pdf_download(state: &op_editor_core::EditorState, boards: 
 /// the same Skia vector PDF as desktop; raster formats ask that same
 /// daemon to run desktop's Skia offscreen exporter.
 pub(super) fn export_image<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
+    if let Some(export) = crate::embed_images::export_hook() {
+        let mut b = inner.borrow_mut();
+        let state = b.host().editor_state();
+        let fmt = state.editor_ui.export_format;
+        let scale = state.editor_ui.export_scale;
+        let file_name = format!(
+            "{}.{}",
+            op_editor_core::export_name::selection_export_stem(state),
+            fmt.extension()
+        );
+        let scene = if state.selection_count() > 1 {
+            Err("프레임이나 레이어를 하나 선택해 주세요.".to_owned())
+        } else {
+            b.embedded_export_svg()
+        };
+        let (svg, error) = match scene {
+            Ok(svg) => (svg, String::new()),
+            Err(message) => (String::new(), message),
+        };
+        if let Err(e) = export.call4(
+            &wasm_bindgen::JsValue::UNDEFINED,
+            &file_name.into(),
+            &svg.into(),
+            &scale.into(),
+            &error.into(),
+        ) {
+            web_sys::console::error_1(&e);
+        }
+        return;
+    }
     let b = inner.borrow();
     let fmt = b.host().editor_state().editor_ui.export_format;
-    // `<document>-<node>.<ext>`, derived exactly as the desktop save
-    // dialog derives its pre-filled name.
     let file_name = file_actions::export_download_file_name(b.host().editor_state());
     if fmt == ExportFormat::Svg {
         match file_actions::export_svg_document(b.host().editor_state()) {
