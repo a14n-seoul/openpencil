@@ -99,6 +99,22 @@ pub fn download_bytes(
     mime: &str,
     data: &[u8],
 ) -> Result<(), wasm_bindgen::JsValue> {
+    if let Some(pending) = begin_download(filename, mime, data)? {
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = wasm_bindgen_futures::JsFuture::from(pending).await {
+                web_sys::console::error_1(&error);
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Returns a promise only when the embedder needs to prepare a portable file.
+pub(crate) fn begin_download(
+    filename: &str,
+    mime: &str,
+    data: &[u8],
+) -> Result<Option<js_sys::Promise>, wasm_bindgen::JsValue> {
     // Wrap the bytes in a `Uint8Array` and hand its backing `ArrayBuffer` to
     // the Blob as a one-element parts sequence.
     let arr = js_sys::Uint8Array::from(data);
@@ -108,6 +124,9 @@ pub fn download_bytes(
     bag.set_type(mime);
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &bag)?;
 
+    if let Some(pending) = crate::embed_images::handle_download(filename, &blob)? {
+        return Ok(Some(pending));
+    }
     let url = web_sys::Url::create_object_url_with_blob(&blob)?;
 
     let window = web_sys::window()
@@ -125,7 +144,7 @@ pub fn download_bytes(
 
     // The browser has captured the Blob for the download; revoke to free it.
     web_sys::Url::revoke_object_url(&url)?;
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(test)]

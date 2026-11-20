@@ -24,6 +24,8 @@ pub mod event;
 // Hidden IME-capture input (#54). Pure web_sys — compiles under BOTH the
 // production `canvaskit` build (where the mount wires composition→apply_ime)
 // and the `web` stub baseline (compile coverage only).
+#[cfg(feature = "canvaskit")]
+mod embed_images;
 #[cfg(any(feature = "canvaskit", test))]
 mod image_decode_queue;
 mod ime_input;
