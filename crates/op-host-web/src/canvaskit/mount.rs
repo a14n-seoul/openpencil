@@ -11,7 +11,10 @@ use super::inner::{
 };
 
 /// See [`super::mount_ck`] — the `#[wasm_bindgen]` export delegates here.
-pub(super) async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
+pub(super) async fn mount_ck(
+    canvas_id: String,
+    font_catalog: Option<Vec<String>>,
+) -> Result<std::rc::Rc<std::cell::RefCell<CkInner>>, JsValue> {
     use crate::listener::{add_listener, now_ms_perf, now_unix_secs, Listener};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -214,7 +217,14 @@ pub(super) async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     crate::web_fonts::drain_missing_fonts_detection(&inner);
     // Fetch the app-shipped design fonts the wasm bundle omits (async; releases
     // the gate above and repaints once every request has settled).
-    crate::bundled_fonts_web::load_bundled_fonts_at_mount(&inner);
+    if let Some(families) = font_catalog {
+        inner
+            .borrow_mut()
+            .host
+            .apply_bundled_font_families(families);
+    } else {
+        crate::bundled_fonts_web::load_bundled_fonts_at_mount(&inner);
+    }
     // Re-register any user-imported fonts persisted in IndexedDB (async; repaints
     // when the read lands so their text re-shapes with the imported typeface).
     crate::web_fonts::load_imported_fonts_at_mount(&inner);
@@ -666,7 +676,6 @@ pub(super) async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     // Retain the shell + its listeners for the page lifetime. (A future
     // WebShell-style handle can own these for explicit teardown; leaking keeps
     // the CanvasKit surface + DOM closures alive for now.)
-    std::mem::forget(inner);
     std::mem::forget(listeners);
-    Ok(())
+    Ok(inner)
 }
